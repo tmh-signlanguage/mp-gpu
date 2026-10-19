@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mp-gpu"
+version = "0.1.0"
+description = "Batched multi-GPU MediaPipe Holistic (legacy-compatible) pose extraction for large video collections"
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [{ name = "TMH sign language group, KTH" }]
+dependencies = [
+    "numpy",
+    "torch>=2.4",          # includes triton on Linux
+    "av>=12",
+    "tqdm",
+    "onnx>=1.16",          # TensorRT engine export (first run)
+    "tensorrt-cu12==10.9.0.34",
+    "PyNvVideoCodec==2.0.2",
+]
+
+[project.optional-dependencies]
+pose = ["pose-format"]     # --format pose|both
+
+[project.scripts]
+mp-gpu = "mp_gpu.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+mp_gpu = ["models/*.json", "models/*.npz"]

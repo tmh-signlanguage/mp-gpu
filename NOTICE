@@ -1,0 +1,5 @@
+mp-gpu includes model weights converted from Google MediaPipe (https://github.com/google-ai-edge/mediapipe),
+legacy Holistic solution v0.10.21: pose_detection, pose_landmark_full, pose_landmark_lite, hand_recrop,
+hand_landmark_full, face_detection_short_range and face_landmark (.tflite -> src/mp_gpu/models/*.graph.json
++ *.weights.npz, numerically identical). MediaPipe is licensed under the Apache License, Version 2.0:
+http://www.apache.org/licenses/LICENSE-2.0

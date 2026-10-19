@@ -14,7 +14,7 @@ dependencies = [
     "torch>=2.4",          # includes triton on Linux
     "av>=12",
     "tqdm",
-    "onnx>=1.16",          # TensorRT engine export (first run)
+    "onnx>=1.16,<1.18",    # TensorRT engine export (first run); newer onnx needs protobuf>=5, which breaks mediapipe
     "tensorrt-cu12==10.9.0.34",
     "PyNvVideoCodec==2.0.2",
 ]

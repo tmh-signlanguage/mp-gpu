@@ -11,7 +11,7 @@ CUDA_VISIBLE_DEVICES=2,3 mp-gpu ...            # or --gpus 2,3
 ```
 
 ```
-mp-gpu  37%|███▋      | 7:51/21:14 video | files 118/381 | in flight 512 (9:02) | 3104 fps, 125x realtime [03:46<06:24]
+mp-gpu  25%|██▍       | 5:17/21:14 video | files 29/381 | in flight 352 (20:57) | 3211 fps, 109x realtime [02:54<08:08]
 ```
 
 The bar shows video time processed out of total (h:mm), files finished, how many videos are open right now (and their total duration), frames/s, and speed relative to real time.
@@ -95,9 +95,11 @@ Over long videos, trajectories drift from legacy by ~0.7 px. That is inherent to
 | legacy Holistic, 1 CPU process | ~12 |
 | mp-gpu, 696×956 crops, 256 streams | ~1,380 (fp32), ~1,650 (fp16) |
 | mp-gpu, 2 GPUs | ~2,730 total (scales linearly) |
-| mp-gpu, YouTube 720p–1080p mix | ~880 while all streams are busy |
+| mp-gpu, YouTube 720p–1080p mix (YTSL25), 4 GPUs | ~3,200 total while all streams are busy |
 
-Throughput needs many videos in flight; with few long videos the GPUs idle, and splitting into chunks is not implemented. Decoding uses ~2 CPU cores per GPU.
+Example: YTSL25 swl, 381 videos with 21 h 14 m of video, on 4 GPUs took **55 min** (`mp-gpu /data/YTSL25/swl/mp4 -o out`).
+
+**Long videos limit the tail.** Each video is processed one frame per batch step, so a single video advances at only ~40–120 frames/s however many GPUs there are. In the run above, the first 50% of the video time took ~10 min, and the last few long videos (up to 15 min of 50 fps) took most of the rest. Collections with many videos per GPU keep the GPUs busy longer; videos are scheduled longest first. Splitting long videos into chunks would remove the tail, but isn't implemented yet. Decoding uses ~2 CPU cores per GPU.
 
 ## Tools
 

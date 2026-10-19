@@ -171,7 +171,7 @@ def main(argv=None):
 
     def refresh():
         el = max(time.time() - t0, 1e-6)
-        bar.set_description_str(f"{hm(bar.n)}/{hm(total)} video | files {ndone}/{len(jobs)}"
+        bar.set_description_str(f"{hm(bar.n)}/{hm(bar.total)} video | files {ndone}/{len(jobs)}"
                             f"{f' ({nerr} failed)' if nerr else ''} | in flight {len(inflight)} ({hm(sum(inflight.values()))})"
                             f" | {frames / el:.0f} fps, {bar.n / el:.0f}x realtime", refresh=False)
         bar.refresh()
@@ -197,7 +197,9 @@ def main(argv=None):
             r, kind = msg[0], msg[1]
             if kind == "tick":
                 _, _, sec, nfr, _ = msg
-                bar.update(min(sec, max(total - bar.n, 0)))
+                if bar.n + sec > bar.total:     # probed durations can be underestimates
+                    bar.total = bar.n + sec
+                bar.update(sec)
                 frames += nfr
             elif kind == "open":
                 inflight[msg[2]] = dur_of.get(msg[2], 0.0)

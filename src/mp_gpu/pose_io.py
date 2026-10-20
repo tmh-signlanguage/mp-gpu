@@ -7,6 +7,8 @@ npz (default): lossless, numpy-only container of the same data a holistic .pose 
   fps, width, height           scalars
   components  str [C]          component names, in order
   points      str [576]        "COMPONENT/POINT" per column
+  persons_t   float32 [K]      (mp-gpu) times (s) of the frames checked for multiple people
+  persons_n   int8 [K]         (mp-gpu) number of people found by the pose detector at those times
 No pickle is needed to read it:  z = np.load(path); z["data"], z["conf"], ...
 
 .pose: standard pose_format file (pose_format.utils.holistic layout).
@@ -34,13 +36,13 @@ def holistic_names():
     return _NAMES
 
 
-def save_npz(path, data, conf, fps, width, height, compress=True):
+def save_npz(path, data, conf, fps, width, height, compress=True, **extra):
     comps, points = holistic_names()
     assert data.shape[1] == len(points), (data.shape, len(points))
     (np.savez_compressed if compress else np.savez)(
         path, data=data.astype(np.float32), conf=conf.astype(np.float32),
         fps=np.float32(fps), width=np.int32(width), height=np.int32(height),
-        components=comps, points=points)
+        components=comps, points=points, **extra)
 
 
 def save_pose(path, data, conf, fps, width, height):

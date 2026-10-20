@@ -345,11 +345,11 @@ def pack_outputs(out, wh):
     return torch.cat([b, f, l, r, w], 1), torch.cat([bc, fc, lc, rc, wc], 1)
 
 
-def write_outputs(out_base, fmt, data, conf, fps, w, h):
-    """out_base: output path without the .npz/.pose suffix."""
+def write_outputs(out_base, fmt, data, conf, fps, w, h, extra=None):
+    """out_base: output path without the .npz/.pose suffix. extra: additional npz arrays."""
     os.makedirs(os.path.dirname(out_base) or ".", exist_ok=True)
     if fmt in ("npz", "both"):
-        save_npz(out_base + ".npz", data, conf, fps, w, h)
+        save_npz(out_base + ".npz", data, conf, fps, w, h, **(extra or {}))
     if fmt in ("pose", "both"):
         save_pose(out_base + ".pose", data, conf, fps, w, h)
 
@@ -384,12 +384,21 @@ def run_worker(work_q, report_q, opt):
     writer = ThreadPoolExecutor(4)
     meta = [None] * S
     res = [None] * S
+    psamp = [None] * S           # per stream: [(t, n_persons)] for the multi-person check
+    p_int = opt.get("persons_interval") or 0.0
     sec_acc = 0.0; frames_acc = 0; last = time.time()
 
-    def finish(m, parts):
+    def finish(m, parts, ps):
         try:
             d = np.concatenate([x[0] for x in parts]); c = np.concatenate([x[1] for x in parts])
-            write_outputs(m["out"], opt["format"], d, c, m["fps"], m["W"], m["H"])
+            extra = None
+            if p_int > 0:
+                pt = np.array([t for t, _ in ps], np.float32); pn = np.array([n for _, n in ps], np.int8)
+                extra = dict(persons_t=pt, persons_n=pn)
+                share = float((pn >= 2).mean()) if len(pn) else 0.0
+                if len(pn) and share >= opt["persons_min_share"]:
+                    report(("persons", m["path"], share, int(pn.max()), len(pn)))
+            write_outputs(m["out"], opt["format"], d, c, m["fps"], m["W"], m["H"], extra)
             report(("done", m["path"], None))
         except Exception as e:  # noqa
             report(("done", m["path"], f"write failed: {e}"))
@@ -406,14 +415,15 @@ def run_worker(work_q, report_q, opt):
                     continue
                 item = sl.q.popleft()
                 if isinstance(item, tuple) and item[0] == "start":
-                    meta[s] = item[1]; res[s] = []; fresh[s] = True
+                    meta[s] = item[1]; res[s] = []; psamp[s] = []; fresh[s] = True
+                    meta[s]["k"] = 0; meta[s]["next_check"] = 0.0
                     continue
                 if isinstance(item, tuple) and item[0] == "end":
                     m = meta[s]
                     if item[1] is not None:
                         report(("done", m["path"], f"{type(item[1]).__name__}: {item[1]}"))
                     elif res[s]:
-                        writer.submit(finish, m, res[s])
+                        writer.submit(finish, m, res[s], psamp[s])
                     else:
                         report(("done", m["path"], "no frames decoded"))
                     meta[s] = None; res[s] = None
@@ -442,7 +452,22 @@ def run_worker(work_q, report_q, opt):
         hol.reset(fresh.to(dev) & active)
         out = hol.step(table, wh, active)
         d, c = pack_outputs(out, wh)
+        check = []                       # streams whose current frame is due for the multi-person check
+        if p_int > 0:
+            for s in range(S):
+                if active_l[s] and meta[s]["k"] / meta[s]["fps"] >= meta[s]["next_check"]:
+                    check.append(s)
+            if check:
+                npers = hol.count_persons(table, wh, torch.tensor(check, device=dev),
+                                          opt["persons_min_rel"]).tolist()
         d = d.cpu().numpy(); c = c.cpu().numpy()
+        for s, n in zip(check, npers if check else ()):
+            t = meta[s]["k"] / meta[s]["fps"]
+            psamp[s].append((t, n))
+            meta[s]["next_check"] = t + p_int
+        for s in range(S):
+            if active_l[s]:
+                meta[s]["k"] += 1
         for s in range(S):
             if active_l[s]:
                 res[s].append((d[s:s + 1].copy(), c[s:s + 1].copy()))

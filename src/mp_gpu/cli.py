@@ -115,6 +115,12 @@ def main(argv=None):
     ap.add_argument("--target-fps", type=float, help="subsample faster sources to this frame rate")
     ap.add_argument("--decode-mem-gb", type=float, default=10.0,
                     help="GPU memory budget for open decoders per GPU (limits concurrent high-res videos)")
+    ap.add_argument("--persons-interval", type=float, default=1.0,
+                    help="seconds between multi-person checks per video (0 = off)")
+    ap.add_argument("--persons-min-rel", type=float, default=0.3,
+                    help="count a person only if at least this fraction of the largest person's size")
+    ap.add_argument("--persons-min-share", type=float, default=0.1,
+                    help="flag a video if >= this share of checked frames have 2+ people")
     ap.add_argument("--decode-threads", type=int, default=8, help="decode threads per GPU")
     ap.add_argument("--depth", type=int, default=4, help="decoded frames buffered per stream")
     ap.add_argument("--exts", default=",".join(e[1:] for e in VIDEO_EXTS), help="video extensions for folder search")
@@ -150,7 +156,8 @@ def main(argv=None):
         work_q.put("__STOP__")
     opt = dict(streams=a.streams, half=a.half, backend=a.backend, decoder=a.decoder, color=a.color,
                target_fps=a.target_fps, decode_mem_gb=a.decode_mem_gb, decode_threads=a.decode_threads,
-               depth=a.depth, format=a.format)
+               depth=a.depth, format=a.format, persons_interval=a.persons_interval,
+               persons_min_rel=a.persons_min_rel, persons_min_share=a.persons_min_share)
     procs = []
     for r, g in enumerate(gpus):
         p = ctx.Process(target=_gpu_main, args=(g, work_q, report_q, dict(opt, rank=r)), daemon=True)
@@ -160,6 +167,8 @@ def main(argv=None):
 
     os.makedirs(a.out, exist_ok=True)
     err_path = os.path.join(a.out, "mp-gpu-errors.log")
+    mp_path = os.path.join(a.out, "mp-gpu-multiperson.tsv")
+    nmulti = 0
     dur_of = {j["path"]: j["dur"] for j in jobs}
     inflight = {}                 # path -> duration
     ndone = nerr = 0
@@ -212,6 +221,15 @@ def main(argv=None):
                     bar.write(f"mp-gpu: ERROR {path}: {err}")
                     with open(err_path, "a") as f:
                         f.write(f"{path}\t{err}\n")
+            elif kind == "persons":
+                path, share, maxn, nsamp = msg[2:6]
+                nmulti += 1
+                bar.write(f"mp-gpu: {maxn} people in {share:.0%} of checked frames: {path}")
+                new = not os.path.exists(mp_path)
+                with open(mp_path, "a") as f:
+                    if new:
+                        f.write("path\tshare_multi\tmax_persons\tchecked_frames\n")
+                    f.write(f"{path}\t{share:.3f}\t{maxn}\t{nsamp}\n")
             elif kind == "warn":
                 bar.write(f"mp-gpu: {msg[2]}: {msg[3]}")
             elif kind == "ready":
@@ -239,7 +257,8 @@ def main(argv=None):
     el = time.time() - t0
     print(f"mp-gpu: done {ndone - nerr}/{len(jobs)} videos ({nerr} failed) in {hm(el)}; "
           f"{hm(bar.n)} of video, {frames / max(el, 1e-6):.0f} fps"
-          + (f"; errors in {err_path}" if nerr else ""), flush=True)
+          + (f"; errors in {err_path}" if nerr else "")
+          + (f"; {nmulti} videos with multiple people listed in {mp_path}" if nmulti else ""), flush=True)
     return 1 if nerr or ndone < len(jobs) else 0
 
 

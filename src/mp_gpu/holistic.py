@@ -183,6 +183,43 @@ def ssd_anchors(input_size, strides):
     return torch.tensor(anchors, dtype=F32)
 
 
+def count_persons(raw_boxes, raw_scores, anchors, size, thresh=0.5, min_rel=0.3, max_k=4):
+    """Number of distinct people found by the pose detector: weighted-NMS clusters (IoU > 0.3, as in
+    MediaPipe) with score >= thresh whose body size (2 x |hip-centre -> head keypoint|, the size MediaPipe
+    uses for the pose ROI) is at least min_rel x the largest person's in that frame. Returns [N] int."""
+    sc = torch.sigmoid(raw_scores[..., 0].float().clamp(-100, 100))
+    rb = raw_boxes.float()
+    ax, ay = anchors[None, :, 0], anchors[None, :, 1]
+    xc = rb[..., 0] / size + ax; yc = rb[..., 1] / size + ay
+    w = rb[..., 2] / size; h = rb[..., 3] / size
+    x0 = xc - w / 2; y0 = yc - h / 2
+    k0x = rb[..., 4] / size + ax; k0y = rb[..., 5] / size + ay
+    k1x = rb[..., 6] / size + ax; k1y = rb[..., 7] / size + ay
+    remaining = (sc >= thresh) & (w >= 0) & (h >= 0)
+    sizes = []
+    for _ in range(max_k):
+        scm = torch.where(remaining, sc, torch.full_like(sc, -1.0))
+        top = scm.argmax(1)
+        valid = remaining.any(1)
+        ar = torch.arange(len(top), device=rb.device)
+        tx0, ty0, tw, th = x0[ar, top], y0[ar, top], w[ar, top], h[ar, top]
+        ix0 = torch.maximum(x0, tx0[:, None]); iy0 = torch.maximum(y0, ty0[:, None])
+        ix1 = torch.minimum(x0 + w, (tx0 + tw)[:, None]); iy1 = torch.minimum(y0 + h, (ty0 + th)[:, None])
+        inter = (ix1 - ix0).clamp(min=0) * (iy1 - iy0).clamp(min=0)
+        iou = inter / (w * h + (tw * th)[:, None] - inter).clamp(min=1e-12)
+        cluster = remaining & (iou > 0.3)
+        cluster[ar, top] |= remaining[ar, top]
+        cw = torch.where(cluster, sc, torch.zeros_like(sc))
+        S = cw.sum(1).clamp(min=1e-12)
+        dx = ((cw * k1x).sum(1) - (cw * k0x).sum(1)) / S
+        dy = ((cw * k1y).sum(1) - (cw * k0y).sum(1)) / S
+        sizes.append(torch.where(valid, 2 * torch.sqrt(dx ** 2 + dy ** 2), torch.zeros_like(dx)))
+        remaining = remaining & ~cluster
+    sz = torch.stack(sizes, 1)                                  # [N, max_k], 0 where no person
+    big = sz.amax(1, keepdim=True)
+    return ((sz > 0) & (sz >= min_rel * big)).sum(1)
+
+
 def top_detection(raw_boxes, raw_scores, anchors, size, n_kp, thresh):
     """Returns (valid [N], box [N,4] xmin,ymin,w,h, kps [N,n_kp,2]) of the top weighted cluster."""
     sc = torch.sigmoid(raw_scores[..., 0].float().clamp(-100, 100))
@@ -377,6 +414,18 @@ class HolisticGPU:
         for f in (self.f_lm, self.f_aux, self.f_world):
             f.reset(m)
         self.v_lm.init[m] = False
+
+    @torch.no_grad()
+    def count_persons(self, frames, img_wh, ids, min_rel=0.3):
+        """Run the pose detector on the full frames of streams `ids` and count distinct people
+        (see count_persons). frames: FrameTable/NV12Table/batch as for step(); img_wh [S,2]."""
+        if not isinstance(frames, (FrameTable, NV12Table)):
+            frames = FrameTable.from_batch(frames)
+        n = len(ids)
+        full = torch.tensor([[0.5, 0.5, 1.0, 1.0, 0.0]], device=self.dev).expand(n, 5).contiguous()
+        t, _ = crop(frames, ids, img_wh[ids], full, 224, 224, True, "zero", -1.0, 1.0, self.dt)
+        boxes, scores = self.m_pdet(t)
+        return count_persons(boxes, scores, self.pd_anchors, 224.0, 0.5, min_rel)
 
     @torch.no_grad()
     def step(self, frames, img_wh, active):

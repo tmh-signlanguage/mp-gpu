@@ -39,6 +39,7 @@ The output is one file per video, `OUT/<relative path>/<video file name>.npz`, h
 | `conf` | float32 [T, 576] | visibility (body/world), 1/0 presence (face/hands) |
 | `fps`, `width`, `height` | scalars | |
 | `components`, `points` | str arrays | component names and `"COMPONENT/POINT"` per column |
+| `persons_t`, `persons_n` | float32 [K], int8 [K] | multi-person check: time (s) of each checked frame and number of people found |
 
 Missing parts are zeros with `conf = 0`. Use `--format pose` (or `both`) for pose_format `.pose` files instead.
 
@@ -49,6 +50,22 @@ from mp_gpu.pose_io import npz_to_pose, load      # pose_format.Pose / plain dic
 ```
 
 Existing outputs are skipped, so an interrupted run resumes; `--overwrite` re-does them. Failures are listed in `OUT/mp-gpu-errors.log`.
+
+### Multi-person check
+
+Holistic tracks one person. With several people in view it may pick any of them, or switch between them.
+
+**How it checks:** once per second of video (`--persons-interval`), the MediaPipe person detector runs on the full frame and the distinct people are counted:
+- a weighted-NMS cluster with score ≥ 0.5 counts as a person;
+- it only counts if its body size is at least 30% of the largest person's (`--persons-min-rel`), which ignores small background people.
+
+**What gets reported:** a video is flagged when ≥ 10% of checked frames have 2+ people (`--persons-min-share`). Flagged videos get:
+- a warning above the progress bar;
+- a row in `OUT/mp-gpu-multiperson.tsv` (path, share of frames, max people, frames checked).
+
+The per-second counts are always stored in the npz (`persons_t`, `persons_n`), so you can also drop individual segments.
+
+**Accuracy and cost:** on 80 DGS-Korpus and 74 SSLL videos it flagged all 35 two-signer videos and none of the 119 single-person ones. It has no measurable cost (one detector call per second of video). `--persons-interval 0` turns it off.
 
 ## Options
 
@@ -61,6 +78,8 @@ Existing outputs are skipped, so an interrupted run resumes; `--overwrite` re-do
 | `--color pyav\|opencv` | `pyav` | YUV→RGB like PyAV/pose_format (honours BT.709 tags), or like `cv2.VideoCapture` (always BT.601). Use `opencv` to match data extracted with OpenCV. |
 | `--target-fps F` | – | subsample faster sources (output i ← source frame round(i·src/target)) |
 | `--decoder auto\|nvdec\|cpu` | `auto` | see below |
+| `--persons-interval S` | 1.0 | seconds between multi-person checks per video (0 = off) |
+| `--persons-min-rel R`, `--persons-min-share F` | 0.3, 0.1 | person size threshold; share of checked frames needed to flag a video |
 | `--half` | off | fp16 TensorRT: ~20% faster, but ~0.6 px instead of ~0.04 px from legacy |
 | `--backend trt\|torch` | `trt` | PyTorch backend: no TensorRT needed, ~3× slower |
 

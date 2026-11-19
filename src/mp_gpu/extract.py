@@ -354,6 +354,50 @@ def write_outputs(out_base, fmt, data, conf, fps, w, h, extra=None):
         save_pose(out_base + ".pose", data, conf, fps, w, h)
 
 
+class Spill:
+    """Per-video results, spilled to a temp file next to the output every CHUNK frames, so host RAM stays
+    flat however long the videos in flight are (in RAM they cost ~1 GB per hour of 30 fps video)."""
+    CHUNK = 512
+    NP = 576
+
+    def __init__(self, out_base):
+        self.path = out_base + ".mp-gpu-tmp"
+        self.buf = []; self.n = 0; self.f = None
+
+    def add(self, d, c):
+        self.buf.append(np.concatenate([d.reshape(-1), c.reshape(-1)]).astype(np.float32))
+        self.n += 1
+        if len(self.buf) >= self.CHUNK:
+            self.flush()
+
+    def flush(self):
+        if not self.buf:
+            return
+        if self.f is None:
+            os.makedirs(os.path.dirname(self.path) or ".", exist_ok=True)
+            self.f = open(self.path, "wb")
+        self.f.write(np.stack(self.buf).tobytes()); self.buf = []
+
+    def close(self):
+        self.flush()
+        if self.f is not None:
+            self.f.close(); self.f = None
+
+    def read(self):
+        """-> data [T,576,3], conf [T,576]; removes the temp file."""
+        a = np.fromfile(self.path, np.float32).reshape(-1, 4 * self.NP)
+        self.discard()
+        return a[:, :3 * self.NP].reshape(-1, self.NP, 3), a[:, 3 * self.NP:]
+
+    def discard(self):
+        if self.f is not None:
+            self.f.close(); self.f = None
+        try:
+            os.remove(self.path)
+        except FileNotFoundError:
+            pass
+
+
 def run_worker(work_q, report_q, opt):
     """Process videos from work_q (dicts with path/out) on the (single) visible GPU until STOP."""
     def report(msg):
@@ -388,9 +432,9 @@ def run_worker(work_q, report_q, opt):
     p_int = opt.get("persons_interval") or 0.0
     sec_acc = 0.0; frames_acc = 0; last = time.time()
 
-    def finish(m, parts, ps):
+    def finish(m, sp, ps):
         try:
-            d = np.concatenate([x[0] for x in parts]); c = np.concatenate([x[1] for x in parts])
+            d, c = sp.read()
             extra = None
             if p_int > 0:
                 pt = np.array([t for t, _ in ps], np.float32); pn = np.array([n for _, n in ps], np.int8)
@@ -401,6 +445,7 @@ def run_worker(work_q, report_q, opt):
             write_outputs(m["out"], opt["format"], d, c, m["fps"], m["W"], m["H"], extra)
             report(("done", m["path"], None))
         except Exception as e:  # noqa
+            sp.discard()
             report(("done", m["path"], f"write failed: {e}"))
 
     while True:
@@ -415,16 +460,20 @@ def run_worker(work_q, report_q, opt):
                     continue
                 item = sl.q.popleft()
                 if isinstance(item, tuple) and item[0] == "start":
-                    meta[s] = item[1]; res[s] = []; psamp[s] = []; fresh[s] = True
+                    meta[s] = item[1]; res[s] = Spill(item[1]["out"]); psamp[s] = []; fresh[s] = True
                     meta[s]["k"] = 0; meta[s]["next_check"] = 0.0
                     continue
                 if isinstance(item, tuple) and item[0] == "end":
                     m = meta[s]
+                    sp = res[s]
                     if item[1] is not None:
+                        sp.discard()
                         report(("done", m["path"], f"{type(item[1]).__name__}: {item[1]}"))
-                    elif res[s]:
-                        writer.submit(finish, m, res[s], psamp[s])
+                    elif sp.n:
+                        sp.close()
+                        writer.submit(finish, m, sp, psamp[s])
                     else:
+                        sp.discard()
                         report(("done", m["path"], "no frames decoded"))
                     meta[s] = None; res[s] = None
                     continue
@@ -470,7 +519,7 @@ def run_worker(work_q, report_q, opt):
                 meta[s]["k"] += 1
         for s in range(S):
             if active_l[s]:
-                res[s].append((d[s:s + 1].copy(), c[s:s + 1].copy()))
+                res[s].add(d[s], c[s])
                 sec_acc += 1.0 / meta[s]["fps"]
                 frames_acc += 1
     report(("tick", sec_acc, frames_acc, 0))

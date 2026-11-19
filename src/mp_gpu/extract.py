@@ -362,7 +362,7 @@ class Spill:
 
     def __init__(self, out_base):
         self.path = out_base + ".mp-gpu-tmp"
-        self.buf = []; self.n = 0; self.f = None
+        self.buf = []; self.n = 0; self.started = False
 
     def add(self, d, c):
         self.buf.append(np.concatenate([d.reshape(-1), c.reshape(-1)]).astype(np.float32))
@@ -373,15 +373,15 @@ class Spill:
     def flush(self):
         if not self.buf:
             return
-        if self.f is None:
+        # open per flush rather than holding one fd per stream: 256+ streams exceed the default fd limit
+        if not self.started:
             os.makedirs(os.path.dirname(self.path) or ".", exist_ok=True)
-            self.f = open(self.path, "wb")
-        self.f.write(np.stack(self.buf).tobytes()); self.buf = []
+        with open(self.path, "ab" if self.started else "wb") as f:
+            f.write(np.stack(self.buf).tobytes())
+        self.started = True; self.buf = []
 
     def close(self):
         self.flush()
-        if self.f is not None:
-            self.f.close(); self.f = None
 
     def read(self):
         """-> data [T,576,3], conf [T,576]; removes the temp file."""
@@ -390,8 +390,7 @@ class Spill:
         return a[:, :3 * self.NP].reshape(-1, self.NP, 3), a[:, 3 * self.NP:]
 
     def discard(self):
-        if self.f is not None:
-            self.f.close(); self.f = None
+        self.buf = []
         try:
             os.remove(self.path)
         except FileNotFoundError:

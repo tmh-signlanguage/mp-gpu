@@ -150,6 +150,8 @@ def main(argv=None):
     import multiprocessing as mp
     ctx = mp.get_context("spawn")
     work_q, report_q = ctx.Queue(), ctx.Queue()
+    # if all workers die, unsent jobs must not block interpreter exit (the feeder thread would hang forever)
+    work_q.cancel_join_thread()
     for j in jobs:
         work_q.put(j)
     for _ in gpus:
